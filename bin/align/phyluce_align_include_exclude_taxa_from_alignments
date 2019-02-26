@@ -1,0 +1,118 @@
+#!/usr/bin/env python
+# encoding: utf-8
+"""
+File: phyluce_align_include_exclude_taxa_from_alignments
+Author: Carl Oliveros
+
+Description: Includes/excludes taxa from folder of nexus alignments.
+
+"""
+
+import os
+import sys
+import glob
+import argparse
+import multiprocessing
+from Bio.Nexus import Nexus
+from Bio.Seq import Seq
+from phyluce.helpers import is_dir, FullPaths, CreateDir, get_file_extensions
+from phyluce.log import setup_logging
+
+def get_args():
+    parser = argparse.ArgumentParser(
+        description='Includes/excludes taxa from folder of nexus alignments.')
+    parser.add_argument(
+        "--alignments",
+        required=True,
+        type=is_dir,
+        action=FullPaths,
+        help="The input directory containing nexus files")
+    parser.add_argument(
+        "--output",
+        required=True,
+        action=CreateDir,
+        help="The directory in which to store the output files")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--exclude",
+        type=str,
+        default=[],
+        nargs='+',
+        help="Taxa to exclude")
+    group.add_argument(
+        "--include",
+        type=str,
+        default=[],
+        nargs='+',
+        help="Taxa to include")
+    parser.add_argument(
+        "--cores",
+        type=int,
+        default=1,
+        help="The number of cores to use")
+    parser.add_argument(
+        "--log-path",
+        action=FullPaths,
+        type=is_dir,
+        default=None,
+        help="The path to a directory to hold logs.")
+    parser.add_argument(
+        "--verbosity",
+        type=str,
+        choices=["INFO", "WARN", "CRITICAL"],
+        default="INFO",
+        help="The logging level to use.")
+    return parser.parse_args()
+
+
+def get_files(input_dir):
+    alignments = []
+    for ftype in get_file_extensions("nexus"):
+        alignments.extend(glob.glob(os.path.join(input_dir, "*{}".format(ftype))))
+    return alignments
+
+
+def get_samples_to_delete(args, all_names):
+    if args.exclude:
+        return set([name for name in all_names if name in args.exclude])
+    elif args.include:
+        return set([name for name in all_names if name not in args.include])
+    else:
+        return []
+
+def worker(work):
+    args, f = work
+    fname = os.path.splitext(os.path.basename(f))[0] 
+    alignment = Nexus.Nexus(f) 
+    delete_taxa = get_samples_to_delete(args, alignment.taxlabels)
+    # delete unwanted taxa
+    alignment.matrix = alignment.crop_matrix(delete=delete_taxa)
+    alignment.ntax = len(alignment.matrix)
+    alignment.taxlabels = alignment.matrix.keys()
+    # remove sites with gap/missing data for all taxa
+    gaps = alignment.gaponly(include_missing=True)
+    if len(gaps) > 0:
+        alignment.matrix = alignment.crop_matrix(exclude=gaps)
+        alignment.nchar = len(alignment.matrix[alignment.taxlabels[0]]._data)
+    # write out nexus
+    alignment.write_nexus_data(os.path.join(args.output, fname + '.nexus'))
+    # write progress dots to stdout
+    sys.stdout.write(".")
+    sys.stdout.flush()
+    
+def main():
+    args = get_args()
+    log, my_name = setup_logging(args)
+    work = [(args, f) for f in get_files(args.alignments)]
+    log.info("Processing {} alignments".format(len(work)))
+    if args.cores <= 1:
+        results = map(worker, work)
+    elif args.cores > 1:
+        pool = multiprocessing.Pool(args.cores)
+        results = pool.map(worker, work)
+    print("")
+    text = " Completed {} ".format(my_name)
+    log.info(text.center(65, "="))
+
+if __name__ == '__main__':
+    main()

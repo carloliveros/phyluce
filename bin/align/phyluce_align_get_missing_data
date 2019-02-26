@@ -1,0 +1,147 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+-(c) 2015 Brant Faircloth || http://faircloth-lab.org/
+-All rights reserved.
+
+-This code is distributed under a 3-clause BSD license. Please see
+-LICENSE.txt for more information.
+
+Created by Carl Oliveros on 04 December 2018 21:08 CDT (-0700)
+
+Description:  Calculates the proportion of missing nucleotide data per taxon and per
+locus for a given set of alignments.
+
+"""
+
+import os
+import glob
+import argparse
+import multiprocessing
+import sys
+from Bio import AlignIO
+from collections import Counter
+from sets import Set
+from phyluce.helpers import is_dir, FullPaths, get_file_extensions
+from phyluce.log import setup_logging
+
+def get_args():
+    parser = argparse.ArgumentParser(
+            description="""Calculates the proportion of missing nucleotide data per taxon and per locus for a given set of alignment"""
+        )
+    parser.add_argument(
+            '--alignments',
+            required=True,
+            type=is_dir,
+            action=FullPaths,
+            help="""The directory containing the alignment files"""
+        )
+    parser.add_argument(
+            '--output',
+            type=str,
+            default='missing_data.txt',
+            help="""The output filename"""
+        )
+    parser.add_argument(
+            "--input-format",
+            dest="input_format",
+            choices=['fasta', 'nexus', 'phylip', 'clustal', 'emboss', 'stockholm', 'phylip-relaxed'],
+            default='nexus',
+            help="""The input alignment format""",
+        )
+    parser.add_argument(
+            "--cores",
+            type=int,
+            default=1,
+            help="""The number of cores to use""",
+        )
+    parser.add_argument(
+            "--log-path",
+            action=FullPaths,
+            type=is_dir,
+            default=None,
+            help="The path to a directory to hold logs"
+        )
+    parser.add_argument(
+            "--verbosity",
+            type=str,
+            choices=["INFO", "WARN", "CRITICAL"],
+            default="INFO",
+            help="The logging level to use"
+        )
+    return parser.parse_args()
+
+def get_files(input_dir, input_format):
+    alignments = []
+    for ftype in get_file_extensions(input_format):
+        alignments.extend(glob.glob(os.path.join(input_dir, "*{}".format(ftype))))
+    return alignments
+
+def worker(work):
+    args, f = work
+    aln = AlignIO.read(f, args.input_format)
+    name = os.path.splitext(os.path.basename(f))[0]
+    missing = {}
+    ambig_codes = list('GATCRYWSMKHBVDN')
+    align_length = aln.get_alignment_length()
+    for taxon in aln:
+        num_missing = 0
+        count = Counter(taxon.seq.upper())
+        for code in count:
+            if code not in ambig_codes:
+                num_missing += count[code]
+        proportion_missing = num_missing/float(align_length)
+        missing[taxon.id] = proportion_missing
+    sys.stdout.write(".")
+    sys.stdout.flush()
+    return(name, align_length, missing)
+
+def get_taxon_list(results):
+    taxon_names = Set()
+    for locus in results:
+        taxon_names = taxon_names.union(locus[2].keys())
+    return(sorted(list(taxon_names)))
+
+def get_total_missing_per_taxon(results, taxon_list):
+    total_align_length = 0
+    total_missing = {}
+    for locus in results:
+        total_align_length += locus[1]
+        for taxon in taxon_list:
+            prop_missing = locus[2].get(taxon, 1.0)
+            total_missing[taxon] = total_missing.get(taxon, 0.0) + prop_missing * locus[1]
+    for taxon in total_missing:
+        total_missing[taxon] = total_missing[taxon] / total_align_length
+    results.append(('Total', total_align_length, total_missing))
+
+def format_missing_props(taxon_list, missing):
+    props = ''
+    for taxon in taxon_list:
+        props += '\t{:.6f}'.format(missing.get(taxon, 1.0))
+    return(props)
+
+def main():
+    args = get_args()
+    log, my_name = setup_logging(args)
+    work = [(args, f) for f in get_files(args.alignments, args.input_format)]
+    log.info("Processing {} alignments".format(len(work)))
+    if args.cores <= 1:
+        results = map(worker, work)
+    elif args.cores > 1:
+        pool = multiprocessing.Pool(args.cores)
+        results = pool.map(worker, work)
+    print("")
+    taxon_list = get_taxon_list(results)
+    get_total_missing_per_taxon(results, taxon_list)
+    log.info("Writing output to {0}".format(args.output))
+    outf = open(args.output, 'w')
+    # write out output
+    outf.write("locus\tlength\t{}\n".format("\t".join(taxon_list)))
+    for locus in results:
+        missing_props = format_missing_props(taxon_list, locus[2])
+        outf.write("{0}\t{1}{2}\n".format(locus[0], locus[1], missing_props))
+    text = " Completed {} ".format(my_name)
+    log.info(text.center(65, "="))
+
+if __name__ == '__main__':
+    main()

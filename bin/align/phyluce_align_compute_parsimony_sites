@@ -1,0 +1,135 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+"""
+(c) 2015 Brant Faircloth || http://faircloth-lab.org/
+All rights reserved.
+
+This code is distributed under a 3-clause BSD license. Please see
+LICENSE.txt for more information.
+
+Created on 13 June 2015 11:28 CDT (-0500)
+"""
+
+import os
+import sys
+import argparse
+import multiprocessing
+
+import dendropy
+
+from phyluce.helpers import FullPaths, CreateDir, is_dir, is_file, get_alignment_files
+from phyluce.log import setup_logging
+
+import pdb
+
+def get_args():
+    """Get arguments from CLI"""
+    parser = argparse.ArgumentParser(
+        description="""Given a folder of alignments and a guide tree, compute sitewise parsimony scores"""
+    )
+    parser.add_argument(
+        '--alignments',
+        required=True,
+        type=is_dir,
+        action=FullPaths,
+        help="Alignment files to process"
+    )
+    parser.add_argument(
+        "--guide-tree",
+        required=True,
+        type=is_file,
+        action=FullPaths,
+        help="""The guide tree to use"""
+    )
+    parser.add_argument(
+        "--input-format",
+        choices=["fasta", "nexus", "phylip", "clustal", "emboss", "stockholm"],
+        default="nexus",
+        help="""The input alignment format.""",
+    )
+    parser.add_argument(
+        "--summary-results",
+        required=True,
+        help="""The file in which to store parsimony scores"""
+    )
+    parser.add_argument(
+        "--verbosity",
+        type=str,
+        choices=["INFO", "WARN", "CRITICAL"],
+        default="INFO",
+        help="""The logging level to use."""
+    )
+    parser.add_argument(
+        "--log-path",
+        action=FullPaths,
+        type=is_dir,
+        default=None,
+        help="""The path to a directory to hold logs."""
+    )
+    parser.add_argument(
+        "--cores",
+        type=int,
+        default=1,
+        help="""Process alignments in parallel using --cores for alignment. """ +
+        """This is the number of PHYSICAL CPUs."""
+    )
+    return parser.parse_args()
+
+
+def compute_parsimony_scores(work):
+    file, args = work
+    taxa = dendropy.TaxonNamespace()
+    data = dendropy.DnaCharacterMatrix.get(
+            file=open(file),
+            schema=args.input_format,
+            taxon_namespace=taxa)
+    tree = dendropy.Tree.get_from_path(
+            args.guide_tree,
+            "newick",
+            taxon_namespace=taxa)
+    #taxon_state_sets_map = data.taxon_state_sets_map(gaps_as_missing=True)
+    score_by_character_list = []
+    #score = dendropy.model.parsimony.fitch_down_pass(
+    #    tree.postorder_node_iter(),
+    #    taxon_state_sets_map=taxon_state_sets_map,
+    #    score_by_character_list=score_by_character_list
+    #)
+    score = dendropy.calculate.treescore.parsimony_score(
+        tree,
+        data,
+        gaps_as_missing=True,
+        score_by_character_list=score_by_character_list
+    )
+    sys.stdout.write(".")
+    sys.stdout.flush()
+    return (os.path.splitext(os.path.basename(file))[0], score_by_character_list)
+
+
+def main():
+    args = get_args()
+    # setup logging
+    log, my_name = setup_logging(args)
+    # get input files
+    files = get_alignment_files(log, args.alignments, args.input_format)
+    work = [[
+            file, args
+        ] for file in files
+    ]
+    if args.cores > 1:
+        assert args.cores <= multiprocessing.cpu_count(), "You've specified more cores than you have"
+        pool = multiprocessing.Pool(args.cores)
+        results = pool.map(compute_parsimony_scores, work)
+    else:
+        results = map(compute_parsimony_scores, work)
+    print ""
+    with open(args.summary_results, 'w') as outf:
+        outf.write("locus,position,parsimony_characters\n")
+        for locus, character_list in results:
+            for cnt, character in enumerate(character_list):
+                outf.write("{},{},{}\n".format(locus, cnt, character))
+    text = " Completed {} ".format(my_name)
+    log.info(text.center(65, "="))
+
+if __name__ == '__main__':
+    main()

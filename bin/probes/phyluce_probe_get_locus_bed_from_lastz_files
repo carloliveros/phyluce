@@ -3,13 +3,10 @@
 """
 File: get_locus_bed_from_lastz_files.py
 Author: Brant Faircloth
-
 Created by Brant Faircloth on 31 January 2013 11:01 PST (-0800)
 Copyright (c) 2013 Brant C. Faircloth. All rights reserved.
-
 Description: Given an input directory of lastz files, output a
 directory of BED files giving the locus locations
-
 """
 
 import os
@@ -111,4 +108,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+        main()
