@@ -74,7 +74,7 @@ def main():
     elif args.by_taxon:
         with open(args.input, 'rU') as input:
             for seq in SeqIO.parse(input, 'fasta'):
-                taxon = '-'.join(seq.id.split(args.split_char)[1:])
+                taxon = '_'.join(seq.id.split(args.split_char)[1:])
                 seqdict[taxon].append(seq)
     print "Writing fasta..."
     for uce, sequences in seqdict.iteritems():
