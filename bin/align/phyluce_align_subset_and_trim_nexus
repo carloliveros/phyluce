@@ -1,0 +1,171 @@
+#!/usr/bin/env python
+# encoding: utf-8
+"""
+File: phyluce_align_subset_and_trim_nexus
+Author: Carl H. Oliveros
+
+Description: Creates subsets of the alignments provided and trims sequences from ends of 
+all taxa based on the sequence of a reference taxon (that has missing data on its ends).
+
+"""
+
+import os
+import sys
+import glob
+import argparse
+import multiprocessing
+import ConfigParser
+from math import ceil
+from Bio.Nexus import Nexus
+from Bio.Seq import Seq
+from phyluce.helpers import is_dir, is_file, FullPaths, CreateDir, get_file_extensions
+from phyluce.log import setup_logging
+
+def get_args():
+    parser = argparse.ArgumentParser(
+        description='Create subsets of alignments and trim ends based on reference taxon.')
+    parser.add_argument(
+        "--alignments",
+        required=True,
+        type=is_dir,
+        action=FullPaths,
+        help="The input directory containing nexus files")
+    parser.add_argument(
+        "--output",
+        required=True,
+        action=CreateDir,
+        help="The directory in which to store the output files")
+    parser.add_argument(
+        '--taxon-list-config',
+        required=True,
+        action=FullPaths,
+        type=is_file,
+        help='The config file containing lists of the taxa you want to include in matrices. Reference taxon starts with asterisk (*)')
+    parser.add_argument(
+        '--minimum-proportion',
+        type=float,
+        default=None,
+        help='The minimum proportion of taxa in the subset that should be contained in each alignment')
+    parser.add_argument(
+        "--cores",
+        type=int,
+        default=1,
+        help="The number of cores to use")
+    parser.add_argument(
+        "--log-path",
+        action=FullPaths,
+        type=is_dir,
+        default=None,
+        help="The path to a directory to hold logs.")
+    parser.add_argument(
+        "--verbosity",
+        type=str,
+        choices=["INFO", "WARN", "CRITICAL"],
+        default="INFO",
+        help="The logging level to use.")
+    return parser.parse_args()
+
+def get_files(input_dir):
+    alignments = []
+    for ftype in get_file_extensions("nexus"):
+        alignments.extend(glob.glob(os.path.join(input_dir, "*{}".format(ftype))))
+    return alignments
+    
+def get_taxa_for_subset(config, subset):
+    include = []
+    reference = []
+    for i in config.items(subset):
+        if i[0][0] == '*':
+            new_name = i[0][1:]
+            reference.append(i[0][1:])
+            include.append(i[0][1:])
+        else:
+            include.append(i[0])
+    return include, reference
+
+def get_trim_size(ref_seq, side, missing):
+    if side == 'left':
+        trimmed = ref_seq.lstrip(missing)
+    elif side == 'right':
+        trimmed = ref_seq.rstrip(missing)
+    trim_size = len(ref_seq) - len(trimmed)
+    return trim_size
+
+def get_trimmed_seq(alignment, trim_left, trim_right, target):
+    target_seq = alignment.matrix[target]._data
+    l = len(target_seq)
+    if trim_left > 0:
+        target_seq = alignment.missing * trim_left + target_seq[trim_left: l]
+    if trim_right > 0:
+        target_seq = target_seq[0: l - trim_right] + alignment.missing * trim_right
+    trimmed_seq = Seq(target_seq, alignment.matrix[target].alphabet)
+    return trimmed_seq
+
+def worker(work):
+    outdir, f, include_taxa, reference, min_taxa = work
+    alignment = Nexus.Nexus(f)
+    delete_taxa = set([name for name in alignment.taxlabels if name not in include_taxa])
+    # delete unwanted taxa
+    if len(delete_taxa) > 0:
+        alignment.matrix = alignment.crop_matrix(delete=delete_taxa)
+        alignment.ntax = len(alignment.matrix)
+        alignment.taxlabels = alignment.matrix.keys()
+    # trim sequences if reference is in alignment
+    if len(reference) > 0:
+        if reference[0] in alignment.taxlabels:
+            ref_seq = alignment.matrix[reference[0]]._data
+            trim_left = get_trim_size(ref_seq, 'left', alignment.missing)
+            trim_right = get_trim_size(ref_seq, 'right', alignment.missing)
+            for taxon in alignment.taxlabels:
+                alignment.matrix[taxon] = get_trimmed_seq(alignment, trim_left, trim_right, taxon)
+    # remove sites with gap/missing data for all taxa
+    gaps = alignment.gaponly(include_missing=True)
+    if len(gaps) > 0:
+        alignment.matrix = alignment.crop_matrix(exclude=gaps)
+        alignment.nchar = len(alignment.matrix[alignment.taxlabels[0]]._data)
+    if len(alignment.matrix) < min_taxa:
+        sys.stdout.write("X")    
+    else:
+        # write out nexus
+        alignment.write_nexus_data(os.path.join(outdir, os.path.basename(f)))
+        # write progress dots to stdout
+        sys.stdout.write(".")
+    sys.stdout.flush() 
+
+def main():
+    args = get_args()
+    log, my_name = setup_logging(args)
+    # parse the config file - allowing no values (e.g. no ":" in config file)
+    config = ConfigParser.RawConfigParser(allow_no_value=True)
+    config.optionxform = str
+    config.read(args.taxon_list_config)
+    if len(set(config.sections())) < len(config.sections()):
+        raise ValueError("Found non-unique subset names")
+    align_files = get_files(args.alignments)
+    for subset in config.sections():
+        include_taxa, reference_taxon = get_taxa_for_subset(config, subset)
+        if len(reference_taxon) > 1:
+            log.info("More than one reference taxon specified for subset {}. Skipping.".format(subset))
+        elif len(include_taxa) < 4:     
+            log.info("Too few taxa ({}) included for subset {}. Skipping.".format(len(include_taxa),subset))
+        else:
+            outdir = os.path.join(args.output, subset)
+            os.makedirs(outdir)
+            if args.minimum_proportion:
+            	min_taxa = max(4,ceil(args.minimum_proportion * len(include_taxa)))
+            else:
+            	min_taxa = 4
+            work = [(outdir, f, include_taxa, reference_taxon, min_taxa) for f in align_files]
+            log.info("Processing {} alignments for subset {}".format(len(work),subset))
+            if args.cores <= 1:
+                results = map(worker, work)
+            elif args.cores > 1:
+                pool = multiprocessing.Pool(args.cores)
+                results = pool.map(worker, work)
+            print("")
+    text = " Completed {} ".format(my_name)
+    log.info(text.center(65, "="))
+
+if __name__ == '__main__':
+    main()
+

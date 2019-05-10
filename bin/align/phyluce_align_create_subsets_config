@@ -1,0 +1,91 @@
+#!/usr/bin/env python
+# encoding: utf-8
+"""
+File: phyluce_align_create_subsets_config
+Author: Carl H. Oliveros
+
+Description: Given csv file of subset sampling strategy, this script produces
+a config file for subsampling taxa.
+
+"""
+
+import argparse
+from phyluce.helpers import is_file, is_dir, FullPaths
+from phyluce.log import setup_logging
+
+def get_args():
+    parser = argparse.ArgumentParser(
+        description='Creates config file for subsampling taxa given comma-delimited file of subset sampling strategy.')
+    parser.add_argument(
+        "--input",
+        required=True,
+        type=is_file,
+        action=FullPaths,
+        help="The tab-delimited file containing subsampling configuration")
+    parser.add_argument(
+        "--output",
+        required=True,
+        type=str,
+        default=None,
+        help="The output config file")
+    parser.add_argument(
+        "--log-path",
+        action=FullPaths,
+        type=is_dir,
+        default=None,
+        help="The path to a directory to hold logs.")
+    parser.add_argument(
+        "--verbosity",
+        type=str,
+        choices=["INFO", "WARN", "CRITICAL"],
+        default="INFO",
+        help="The logging level to use.")
+    return parser.parse_args()
+
+class group:
+    def __init__(self, label):
+        self.name = label
+        self.taxa = []
+
+def get_config(f):
+    config = []
+    firstline = True
+    for line in open(f, 'r'):
+        split_line = line.rstrip().split(',')
+        if firstline:
+            del split_line[0]
+            for group_name in split_line:
+                g = group(group_name)
+                config.append(g)
+            firstline = False
+        else:
+            taxon_name = split_line[0]
+            del split_line[0]
+            for i in range(0, len(split_line)):
+                if split_line[i] in ['X','O']:
+                    config[i].taxa.append(taxon_name)
+                elif split_line[i] == 'T':
+                    config[i].taxa.append('*' + taxon_name)
+    return config
+
+def write_config(config, f):
+    with open(f, 'w') as outf:
+        for g in config:
+            outf.write('[{}]\n'.format(g.name))
+            for t in g.taxa:
+                outf.write('{}\n'.format(t))
+            outf.write('\n')
+    outf.close()
+    
+def main():
+    args = get_args()
+    log, my_name = setup_logging(args)
+    log.info("Reading input file {}".format(args.input))
+    config = get_config(args.input)
+    log.info("Writing output file {}".format(args.output))
+    write_config(config, args.output)
+    text = " Completed {} ".format(my_name)
+    log.info(text.center(65, "="))
+
+if __name__ == '__main__':
+    main()

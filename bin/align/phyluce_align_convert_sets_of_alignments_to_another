@@ -1,0 +1,134 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+"""
+(c) 2014 Brant Faircloth || http://faircloth-lab.org/
+All rights reserved.
+
+Author: Brant Faircloth, Carl H. Oliveros
+
+This code is distributed under a 3-clause BSD license. Please see
+LICENSE.txt for more information.
+
+"""
+
+import os
+import sys
+import glob
+import argparse
+import ConfigParser
+from Bio import AlignIO
+from Bio.Align import MultipleSeqAlignment as Alignment
+from multiprocessing import Pool
+from Bio.Alphabet import IUPAC, Gapped
+
+from phyluce.helpers import get_file_extensions, is_dir, is_file, FullPaths, CreateDir
+from phyluce.log import setup_logging
+
+def get_args():
+    parser = argparse.ArgumentParser(description="""Convert alignments from one format to another.""")
+    parser.add_argument(
+            '--alignments',
+            required=True,
+            type=is_dir,
+            action=FullPaths,
+            help='The directory containing the alignments to convert.')
+    parser.add_argument(
+            '--output',
+            required=True,
+            action=CreateDir,
+            help='An output directory to hold the converted alignments.')
+    parser.add_argument(
+            "--input-format",
+            dest="input_format",
+            choices=['fasta', 'nexus', 'phylip', 'phylip-relaxed', 'phylip-sequential', 'clustal', 'emboss', 'stockholm'],
+            default='nexus',
+            help="""The input alignment format"""
+        )
+    parser.add_argument(
+            "--output-format",
+            dest="output_format",
+            choices=['fasta', 'nexus', 'phylip', 'phylip-relaxed', 'phylip-sequential', 'clustal', 'emboss', 'stockholm'],
+            default='fasta',
+            help="""The input alignment format"""
+        )
+    parser.add_argument(
+            "--cores",
+            type=int,
+            default=1,
+            help="""The number of compute cores to use"""
+        )
+    parser.add_argument(
+            "--taxon-list-config",
+            action=FullPaths,
+            type=is_file,
+            help='The config file containing lists of the taxa you want to include in matrices. Reference taxon starts with asterisk (*)'
+        )
+    parser.add_argument(
+            "--verbosity",
+            type=str,
+            choices=["INFO", "WARN", "CRITICAL"],
+            default="INFO",
+            help="""The logging level to use."""
+        )
+    parser.add_argument(
+            "--log-path",
+            action=FullPaths,
+            type=is_dir,
+            default=None,
+            help="""The path to a directory to hold logs."""
+        )
+    return parser.parse_args()
+
+
+def get_files(input_dir, input_format):
+    extensions = get_file_extensions(input_format)
+    files = []
+    for ext in extensions:
+        files.extend(glob.glob(os.path.join(os.path.expanduser(input_dir), '*{}*'.format(ext))))
+    # ensure we collapse duplicate filenames
+    return list(set(files))
+
+
+def convert_files_worker(params):
+    f, args, subset = params
+    aln = AlignIO.read(f, args.input_format, alphabet=Gapped(IUPAC.ambiguous_dna))
+    new_name = os.path.splitext(os.path.split(f)[1])[0] + '.{0}'.format(args.output_format)
+    outf = open(os.path.join(args.output, subset, new_name), 'w')
+    AlignIO.write(aln, outf, args.output_format)
+    outf.close()
+    sys.stdout.write('.')
+    sys.stdout.flush()
+
+
+def main():
+    args = get_args()
+    # setup logging
+    log, my_name = setup_logging(args)
+    # parse the config file - allowing no values (e.g. no ":" in config file)
+    config = ConfigParser.RawConfigParser(allow_no_value=True)
+    config.optionxform = str
+    config.read(args.taxon_list_config)    
+    for subset in config.sections():    
+        files = get_files(os.path.join(args.alignments, subset), args.input_format)
+        if len(files) == 0:
+            raise IOError("There are no {}-formatted alignments in {}.".format(
+                args.input_format,
+                args.alignments
+            ))
+        params = [[f, args, subset] for f in files]
+        log.info('Converting for subset {}'.format(subset))
+        outdir = os.path.join(args.output, subset)
+        os.makedirs(outdir)        
+        if args.cores > 1:
+            pool = Pool(args.cores)
+            pool.map(convert_files_worker, params)
+        else:
+            map(convert_files_worker, params)
+        print ""
+    # end
+    text = " Completed {} ".format(my_name)
+    log.info(text.center(65, "="))
+
+if __name__ == '__main__':
+    main()
