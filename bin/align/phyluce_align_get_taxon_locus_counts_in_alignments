@@ -4,10 +4,8 @@
 """
 (c) 2015 Brant Faircloth || http://faircloth-lab.org/
 All rights reserved.
-
 This code is distributed under a 3-clause BSD license. Please see
 LICENSE.txt for more information.
-
 Created on 15 June 2013 10:06 PDT (-0700)
 """
 
@@ -16,7 +14,7 @@ import glob
 import argparse
 from Bio import AlignIO
 from phyluce.helpers import is_dir, FullPaths, get_file_extensions
-from collections import Counter
+from collections import Counter, defaultdict
 
 #import pdb
 
@@ -24,7 +22,7 @@ from collections import Counter
 def get_args():
     """Get arguments from CLI"""
     parser = argparse.ArgumentParser(
-        description="""Given an input directory of alignments, determine the number of alignments per taxon"""
+        description="""Given an input directory of alignments, determine the number of alignments and average sequence length per taxon"""
     )
     parser.add_argument(
         "--alignments",
@@ -37,7 +35,7 @@ def get_args():
         "--input-format",
         dest="input_format",
         choices=['fasta', 'nexus', 'phylip', 'clustal', 'emboss', 'stockholm'],
-        default='fasta',
+        default='nexus',
         help="""The input alignment format""",
     )
     return parser.parse_args()
@@ -55,14 +53,17 @@ def main():
     # iterate through all the files to determine the longest alignment
     files = get_files(args.alignments, args.input_format)
     count = Counter()
+    seq_length = defaultdict(int)
     for f in files:
         aln = AlignIO.read(f, args.input_format)
         for seq in aln:
             if len(set(str(seq.seq))) > 1:
                 count[seq.id] += 1
-    print "taxon,count"
+                seq_length[seq.id] += len(str(seq.seq).strip('-?'))
+    print "taxon,count,avglen"
     for taxon, cnt in count.iteritems():
-        print "{},{}".format(taxon, cnt)
+        average = seq_length[taxon] / cnt
+        print "{},{},{}".format(taxon, cnt, average)
 
 
 if __name__ == '__main__':
